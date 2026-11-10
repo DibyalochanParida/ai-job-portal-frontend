@@ -1,0 +1,61 @@
+# Rendered by the nginx image's envsubst step at container start.
+#   API_UPSTREAM     where /api is proxied (e.g. http://api:4000). When an AWS ALB routes
+#                    /api/* to the API directly, these requests never reach this container.
+#   NGINX_RESOLVER   DNS resolver for API_UPSTREAM (Docker: 127.0.0.11, AWS VPC: 169.254.169.253)
+#   CSP_CONNECT_SRC  extra origins the SPA may call (set when VITE_API_URL is another origin)
+
+resolver ${NGINX_RESOLVER} valid=30s ipv6=off;
+
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+    server_tokens off;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), geolocation=(), microphone=(self)" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ${CSP_CONNECT_SRC}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok";
+    }
+
+    location /api/ {
+        # A variable defers DNS resolution to request time, so nginx starts even when the
+        # upstream host is not resolvable (e.g. ALB path routing makes this block unused).
+        set $api_upstream ${API_UPSTREAM};
+        proxy_pass $api_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 10m;
+        proxy_read_timeout 120s;
+    }
+
+    # Hashed build assets are immutable.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        try_files $uri =404;
+    }
+
+    # SPA routing: unknown paths serve index.html, which must never be cached.
+    location / {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ${CSP_CONNECT_SRC}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+        try_files $uri $uri/ /index.html;
+    }
+}
